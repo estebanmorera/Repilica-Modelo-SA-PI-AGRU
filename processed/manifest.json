@@ -1,0 +1,33 @@
+{
+  "description": "Datos exactos para C1/B0005/seed58",
+  "report": {
+    "B0005": {
+      "cycles": {
+        "test": 26,
+        "train": 117,
+        "val": 25
+      },
+      "windows": {
+        "test": 5291,
+        "train": 26431,
+        "val": 5405
+      }
+    },
+    "B0006": {
+      "cycles": {
+        "test": 168
+      },
+      "windows": {
+        "test": 36379
+      }
+    },
+    "B0007": {
+      "cycles": {
+        "test": 168
+      },
+      "windows": {
+        "test": 41770
+      }
+    }
+  }
+}
