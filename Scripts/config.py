@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+# Los scripts viven en ``Scripts/`` y los datos en la raiz del repositorio.
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass(frozen=True)
@@ -78,19 +79,15 @@ class Config:
 
     @property
     def raw_dir(self) -> Path:
-        return ROOT / "data" / "raw"
+        return ROOT / "nasa_raw"
 
     @property
     def processed_dir(self) -> Path:
-        return ROOT / "data" / "processed"
+        return ROOT / "processed"
 
     @property
     def output_dir(self) -> Path:
         return ROOT / "outputs" / self.run_name
-
-    @property
-    def reference_dir(self) -> Path:
-        return ROOT / "reference" / "best_run"
 
     def validate(self) -> None:
         if self.data.train_battery in self.data.test_batteries:
@@ -114,4 +111,3 @@ class Config:
 
 CONFIG = Config()
 CONFIG.validate()
-

@@ -1,27 +1,23 @@
 # -*- coding: utf-8 -*-
-"""Entrena, evalua y documenta la corrida C1/B0005/seed 58.
+"""Entrena y grafica la corrida C1/B0005/seed 58.
 
 Uso normal::
 
     python preprocessing.py
     python train.py
 
-La metrica principal de este repositorio se calcula con un voto por ciclo.  El
-R2 de curva completa se conserva como diagnostico comparable con el reporte
-historico; el ultimo 15 % se informa aparte para no ocultar la extrapolacion.
+Al terminar, guarda una grafica por bateria y el CSV minimo usado para
+construirla: ciclo, SoH real y SoH predicho.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import math
 import os
 import random
-import sys
-from dataclasses import asdict
 from pathlib import Path
 
 # La corrida historica uso esta configuracion de determinismo para CUDA/cuBLAS.
@@ -180,49 +176,21 @@ def aggregate_by_cycle(
     return matrix[:, 0].astype(int), matrix[:, 1], matrix[:, 2]
 
 
-def regression_metrics(actual: np.ndarray, prediction: np.ndarray) -> dict:
-    """RMSE, MAE y R2 sin recortar valores negativos."""
+def prediction_rows(
+    model: SA_PI_AGRU, arrays: dict[str, torch.Tensor]
+) -> list[dict]:
+    """Devuelve solamente los tres valores necesarios para la grafica."""
 
-    actual = np.asarray(actual, dtype=np.float64)
-    prediction = np.asarray(prediction, dtype=np.float64)
-    if actual.shape != prediction.shape or not actual.size:
-        raise ValueError("Los vectores real y predicho deben coincidir")
-    error = actual - prediction
-    sse = float(np.sum(error**2))
-    mean = float(np.mean(actual))
-    sst = float(np.sum((actual - mean) ** 2))
-    r2 = None if sst <= np.finfo(np.float64).eps else 1.0 - sse / sst
-    if r2 is not None and r2 > 1.0 + 1e-10:
-        raise AssertionError("R2 imposible; revise el emparejamiento de datos")
-    return {
-        "n_cycles": int(len(actual)),
-        "rmse_soh": float(np.sqrt(np.mean(error**2))),
-        "rmse_percent_points": float(100.0 * np.sqrt(np.mean(error**2))),
-        "mae_soh": float(np.mean(np.abs(error))),
-        "mae_percent_points": float(100.0 * np.mean(np.abs(error))),
-        "r2": None if r2 is None else float(r2),
-        "r2_percent": None if r2 is None else float(100.0 * r2),
-        "sse": sse,
-        "sst": sst,
-    }
-
-
-def evaluate_split(
-    model: SA_PI_AGRU, arrays: dict[str, torch.Tensor], split_name: str
-) -> tuple[dict, list[dict]]:
     predictions = predict_windows(model, arrays)
     cycles, actual, predicted = aggregate_by_cycle(arrays, predictions)
-    rows = [
+    return [
         {
             "cycle": int(cycle),
             "soh_true": float(truth),
             "soh_pred": float(estimate),
-            "error_soh": float(estimate - truth),
-            "split": split_name,
         }
         for cycle, truth, estimate in zip(cycles, actual, predicted)
     ]
-    return regression_metrics(actual, predicted), rows
 
 
 def validation_cycle_mse(
@@ -459,152 +427,28 @@ def plot_cycles(path: Path, battery_id: str, rows: list[dict]) -> None:
     plt.close(figure)
 
 
-def evaluate_model(model: SA_PI_AGRU) -> dict:
-    """Evalua B0005 y la transferencia zero-shot a B0006/B0007."""
+def evaluate_model(model: SA_PI_AGRU) -> None:
+    """Guarda una curva y su CSV fuente para B0005, B0006 y B0007."""
 
     destination = CONFIG.output_dir / "evaluation_endpoint"
     destination.mkdir(parents=True, exist_ok=True)
-    all_metrics: dict[str, dict] = {}
-
     train_battery = load_battery(CONFIG.data.train_battery)
     full_rows: list[dict] = []
     for split in ("train", "val", "test"):
-        metrics, rows = evaluate_split(model, tensor_split(train_battery, split), split)
-        key = f"B0005_{split}"
-        all_metrics[key] = metrics
-        full_rows.extend(rows)
-        write_csv(destination / f"{key}_cycles.csv", rows)
+        full_rows.extend(prediction_rows(model, tensor_split(train_battery, split)))
     full_rows.sort(key=lambda row: row["cycle"])
-    full_actual = np.asarray([row["soh_true"] for row in full_rows])
-    full_prediction = np.asarray([row["soh_pred"] for row in full_rows])
-    all_metrics["B0005_full_DIAGNOSTIC_ONLY"] = regression_metrics(
-        full_actual, full_prediction
-    )
     write_csv(destination / "B0005_full_cycles.csv", full_rows)
     plot_cycles(destination / "B0005.png", "B0005", full_rows)
 
     for battery_id in CONFIG.data.test_batteries:
         arrays = tensor_split(load_battery(battery_id), "test")
-        metrics, rows = evaluate_split(model, arrays, "external")
-        all_metrics[battery_id] = metrics
+        rows = prediction_rows(model, arrays)
         write_csv(destination / f"{battery_id}_cycles.csv", rows)
         plot_cycles(destination / f"{battery_id}.png", battery_id, rows)
-
-        count = len(rows)
-        train_end = min(max(1, int(count * 0.70)), count - 2)
-        tail_start = min(max(train_end + 1, int(count * 0.85)), count - 1)
-        tail_rows = rows[tail_start:]
-        tail_key = f"{battery_id}_tail15_PRIMARY"
-        tail_actual = np.asarray([row["soh_true"] for row in tail_rows])
-        tail_prediction = np.asarray([row["soh_pred"] for row in tail_rows])
-        all_metrics[tail_key] = regression_metrics(tail_actual, tail_prediction)
-        write_csv(destination / f"{tail_key}_cycles.csv", tail_rows)
-
-    result = {
-        "run_name": CONFIG.run_name,
-        "seed": CONFIG.train.seed,
-        "checkpoint": "endpoint",
-        "checkpoint_epoch": CONFIG.train.epochs,
-        "metrics": all_metrics,
-    }
-    (destination / "metrics.json").write_text(
-        json.dumps(result, indent=2, sort_keys=True), encoding="utf-8"
-    )
-    return result
-
-
-def metrics_from_csv(path: Path) -> dict:
-    """Recalcula las metricas de un CSV historico sin confiar en su JSON."""
-
-    with path.open(newline="", encoding="utf-8") as stream:
-        rows = list(csv.DictReader(stream))
-    actual = np.asarray([float(row["soh_true"]) for row in rows])
-    predicted = np.asarray([float(row["soh_pred"]) for row in rows])
-    return regression_metrics(actual, predicted)
-
-
-def verify_reference() -> dict:
-    """Comprueba que CSV y metrics.json del resultado congelado concuerdan."""
-
-    metrics_path = CONFIG.reference_dir / "metrics.json"
-    if not metrics_path.exists():
-        raise FileNotFoundError(f"Falta la referencia: {metrics_path}")
-    stored = json.loads(metrics_path.read_text(encoding="utf-8"))["metrics"]
-    files = {
-        "B0005_full_DIAGNOSTIC_ONLY": "B0005_full_cycles.csv",
-        "B0005_test": "B0005_test_cycles.csv",
-        "B0006": "B0006_cycles.csv",
-        "B0006_tail15_PRIMARY": "B0006_tail15_PRIMARY_cycles.csv",
-        "B0007": "B0007_cycles.csv",
-        "B0007_tail15_PRIMARY": "B0007_tail15_PRIMARY_cycles.csv",
-    }
-    report = {}
-    for key, filename in files.items():
-        recalculated = metrics_from_csv(CONFIG.reference_dir / filename)
-        expected = stored[key]
-        deltas = {
-            name: abs(float(recalculated[name]) - float(expected[name]))
-            for name in ("r2", "rmse_percent_points", "mae_percent_points")
-        }
-        passed = recalculated["n_cycles"] == expected["n_cycles"] and max(
-            deltas.values()
-        ) < 1e-12
-        report[key] = {"passed": passed, "deltas": deltas}
-        print(
-            f"{key:30s} R2={recalculated['r2_percent']:10.6f}% "
-            f"RMSE={recalculated['rmse_percent_points']:.6f} pp "
-            f"{'OK' if passed else 'FAIL'}"
-        )
-    if not all(item["passed"] for item in report.values()):
-        raise AssertionError("Los CSV historicos no coinciden con metrics.json")
-    return report
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def write_run_metadata(history: list[dict]) -> None:
-    """Deja configuracion, entorno, hashes e historial junto a la corrida."""
-
-    CONFIG.output_dir.mkdir(parents=True, exist_ok=True)
-    (CONFIG.output_dir / "resolved_config.json").write_text(
-        json.dumps(asdict(CONFIG), indent=2, sort_keys=True), encoding="utf-8"
-    )
-    provenance = {
-        "python": sys.version,
-        "torch": torch.__version__,
-        "numpy": np.__version__,
-        "cuda": torch.version.cuda,
-        "cudnn": torch.backends.cudnn.version(),
-        "device": str(DEVICE),
-        "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
-        "raw_sha256": {
-            battery_id: sha256(CONFIG.raw_dir / f"{battery_id}.mat")
-            for battery_id in (
-                CONFIG.data.train_battery,
-                *CONFIG.data.test_batteries,
-            )
-        },
-    }
-    (CONFIG.output_dir / "provenance.json").write_text(
-        json.dumps(provenance, indent=2, sort_keys=True), encoding="utf-8"
-    )
-    write_csv(CONFIG.output_dir / "history.csv", history)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--verify-reference",
-        action="store_true",
-        help="recalcula las metricas historicas incluidas y termina",
-    )
     parser.add_argument("--resume", action="store_true", help="reanuda checkpoint_last.pt")
     parser.add_argument(
         "--allow-cpu",
@@ -613,27 +457,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.verify_reference:
-        verify_reference()
-        return
     if DEVICE.type != "cuda" and not args.allow_cpu:
         raise RuntimeError(
             "La corrida de referencia uso CUDA/L40S. Use --allow-cpu solo para "
             "una prueba funcional, no para comparar igualdad numerica."
         )
 
-    model, history = train_model(resume=args.resume)
-    write_run_metadata(history)
-    result = evaluate_model(model)
-    print("\nResumen de curva completa (diagnostico):")
-    for key in ("B0005_full_DIAGNOSTIC_ONLY", "B0006", "B0007"):
-        metric = result["metrics"][key]
-        print(
-            f"{key:30s} R2={metric['r2_percent']:9.4f}% "
-            f"RMSE={metric['rmse_percent_points']:.4f} pp"
-        )
+    model, _ = train_model(resume=args.resume)
+    evaluate_model(model)
+    print(f"\nGraficas y CSV guardados en: {CONFIG.output_dir / 'evaluation_endpoint'}")
 
 
 if __name__ == "__main__":
     main()
-
