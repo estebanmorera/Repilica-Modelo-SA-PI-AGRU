@@ -1,0 +1,7 @@
+# Entorno local y caché de Python.
+.venv/
+__pycache__/
+*.py[cod]
+
+# Nuevos entrenamientos; las figuras históricas están en resultados_referencia/.
+outputs/

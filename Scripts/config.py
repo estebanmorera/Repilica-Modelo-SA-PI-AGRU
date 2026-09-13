@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Configuracion unica de la mejor corrida SA-PI-AGRU.
+"""Configuración del modelo base de la réplica SA-PI-AGRU.
 
-Este repositorio conserva la division original en cuatro archivos de JP.  Los
-valores de abajo no son una nueva busqueda: corresponden a la corrida
-C1/B0005/seed 58 terminada en 10 000 actualizaciones.
+Los valores incluidos corresponden a la ejecución de referencia descrita en
+el README. Para hacer otra prueba, ajuste los parámetros y cambie run_name
+para guardar sus resultados en una carpeta independiente.
 """
 
 from dataclasses import dataclass, field
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @dataclass(frozen=True)
 class DataConfig:
-    """Como se leen y separan las baterias NASA."""
+    """Lectura, limpieza y separación de las baterías NASA."""
 
     train_battery: str = "B0005"
     test_batteries: tuple[str, ...] = ("B0006", "B0007")
@@ -30,7 +30,7 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Arquitectura documentada por JP y concretada en la corrida C1."""
+    """Tamaño de la GRU con atención y tasa física inicial."""
 
     sensor_count: int = 6
     hidden_size: int = 32
@@ -54,14 +54,14 @@ class PhysicsConfig:
 
 @dataclass(frozen=True)
 class TrainConfig:
-    """Parametros que produjeron el endpoint de referencia."""
+    """Parámetros de aprendizaje y frecuencia de guardado."""
 
     epochs: int = 10_000
     batch_size: int = 256
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
     gradient_clip_norm: float = 1.0
-    seed: int = 58
+    seed: int = 58  # Fija la inicialización y el muestreo aleatorio.
     validation_every: int = 50
     checkpoint_every: int = 500
     log_every: int = 100
@@ -75,7 +75,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     physics: PhysicsConfig = field(default_factory=PhysicsConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-    run_name: str = "C1_B0005_seed58"
+    run_name: str = "modelo_base"
 
     @property
     def raw_dir(self) -> Path:

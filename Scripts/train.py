@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Entrena y grafica la corrida C1/B0005/seed 58.
+"""Entrena el modelo base y guarda las curvas de salud de las baterías.
 
 Uso normal::
 
@@ -20,7 +20,7 @@ import os
 import random
 from pathlib import Path
 
-# La corrida historica uso esta configuracion de determinismo para CUDA/cuBLAS.
+# Configuración de CUDA/cuBLAS para repetir las operaciones numéricas.
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
@@ -83,7 +83,7 @@ def one_sequence_per_cycle(
 def make_collocation_pool(
     train_data: dict[str, torch.Tensor], generator: torch.Generator
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Crea los 5 000 pares X/t independientes usados por la perdida fisica."""
+    """Combina ventanas y tiempos independientes para evaluar la ecuación física."""
 
     count = CONFIG.physics.collocation_points
     cycles = train_data["cycle"].flatten().to(torch.int64)
@@ -110,7 +110,7 @@ def physics_loss(
     times: torch.Tensor,
     initial_sensors: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Residuo de Verhulst mas la condicion inicial del paper."""
+    """Combina el residuo de Verhulst y el error de la condición inicial."""
 
     times = times.detach().clone().requires_grad_(True)
     predicted_u = model(sensors, times)
@@ -238,14 +238,16 @@ def save_checkpoint(payload: dict, destination: Path) -> None:
 
 
 def load_checkpoint(path: Path) -> dict:
+    # Los estados aleatorios deben cargarse en CPU; modelo y optimizador
+    # trasladan sus parámetros al dispositivo al restaurarlos.
     try:
-        return torch.load(path, map_location=DEVICE, weights_only=False)
+        return torch.load(path, map_location="cpu", weights_only=False)
     except TypeError:  # PyTorch 1.13.1 no conoce weights_only.
-        return torch.load(path, map_location=DEVICE)
+        return torch.load(path, map_location="cpu")
 
 
 def train_model(resume: bool = False) -> tuple[SA_PI_AGRU, list[dict]]:
-    """Ejecuta las 10 000 actualizaciones deterministas de C1."""
+    """Entrena durante las épocas indicadas, con una ventana por ciclo."""
 
     seed_everything(CONFIG.train.seed)
     battery = load_battery(CONFIG.data.train_battery)
@@ -281,8 +283,8 @@ def train_model(resume: bool = False) -> tuple[SA_PI_AGRU, list[dict]]:
                 f"Ya existe {last_path}. Use --resume o retire esa salida."
             )
         state = load_checkpoint(last_path)
-        if state.get("run_name") != CONFIG.run_name or state.get("seed") != 58:
-            raise ValueError("El checkpoint no pertenece a C1/B0005/seed58")
+        if state.get("run_name") != CONFIG.run_name or state.get("seed") != CONFIG.train.seed:
+            raise ValueError("El checkpoint no corresponde al nombre y semilla configurados")
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
         start_epoch = int(state["epoch"])
@@ -295,8 +297,8 @@ def train_model(resume: bool = False) -> tuple[SA_PI_AGRU, list[dict]]:
             torch.cuda.set_rng_state_all(state["cuda_rng_state"])
 
     print(
-        f"run={CONFIG.run_name} seed=58 device={DEVICE} "
-        f"train_cycles={len(torch.unique(train_data['cycle']))}"
+        f"ejecucion={CONFIG.run_name} semilla={CONFIG.train.seed} dispositivo={DEVICE} "
+        f"ciclos_entrenamiento={len(torch.unique(train_data['cycle']))}"
     )
     for epoch_index in range(start_epoch, CONFIG.train.epochs):
         model.train()
@@ -428,17 +430,18 @@ def plot_cycles(path: Path, battery_id: str, rows: list[dict]) -> None:
 
 
 def evaluate_model(model: SA_PI_AGRU) -> None:
-    """Guarda una curva y su CSV fuente para B0005, B0006 y B0007."""
+    """Guarda una curva completa y su CSV para cada batería configurada."""
 
-    destination = CONFIG.output_dir / "evaluation_endpoint"
+    destination = CONFIG.output_dir / "resultados"
     destination.mkdir(parents=True, exist_ok=True)
-    train_battery = load_battery(CONFIG.data.train_battery)
+    train_id = CONFIG.data.train_battery
+    train_battery = load_battery(train_id)
     full_rows: list[dict] = []
     for split in ("train", "val", "test"):
         full_rows.extend(prediction_rows(model, tensor_split(train_battery, split)))
     full_rows.sort(key=lambda row: row["cycle"])
-    write_csv(destination / "B0005_full_cycles.csv", full_rows)
-    plot_cycles(destination / "B0005.png", "B0005", full_rows)
+    write_csv(destination / f"{train_id}_full_cycles.csv", full_rows)
+    plot_cycles(destination / f"{train_id}.png", train_id, full_rows)
 
     for battery_id in CONFIG.data.test_batteries:
         arrays = tensor_split(load_battery(battery_id), "test")
@@ -453,19 +456,19 @@ def main() -> None:
     parser.add_argument(
         "--allow-cpu",
         action="store_true",
-        help="permite una prueba funcional en CPU; no replica el entorno L40S",
+        help="permite entrenar en CPU si no hay GPU disponible",
     )
     args = parser.parse_args()
 
     if DEVICE.type != "cuda" and not args.allow_cpu:
         raise RuntimeError(
-            "La corrida de referencia uso CUDA/L40S. Use --allow-cpu solo para "
-            "una prueba funcional, no para comparar igualdad numerica."
+            "No se detectó una GPU disponible para PyTorch. "
+            "Use --allow-cpu para entrenar en CPU."
         )
 
     model, _ = train_model(resume=args.resume)
     evaluate_model(model)
-    print(f"\nGraficas y CSV guardados en: {CONFIG.output_dir / 'evaluation_endpoint'}")
+    print(f"\nGraficas y CSV guardados en: {CONFIG.output_dir / 'resultados'}")
 
 
 if __name__ == "__main__":

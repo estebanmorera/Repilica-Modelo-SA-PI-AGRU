@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Arquitectura SA-PI-AGRU usada por la corrida C1/B0005/seed 58."""
+"""GRU con atención y ecuación física para estimar la salud de baterías."""
 
 from __future__ import annotations
 
@@ -73,4 +73,3 @@ class SA_PI_AGRU(nn.Module):
         """Tasa de Verhulst positiva en tiempo normalizado."""
 
         return F.softplus(self.r_raw)
-

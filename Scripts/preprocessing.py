@@ -276,7 +276,7 @@ def process_all() -> dict:
         }
 
     manifest = {
-        "description": "Datos exactos para C1/B0005/seed58",
+        "description": "Datos procesados para el modelo base SA-PI-AGRU",
         "report": report,
     }
     CONFIG.processed_dir.mkdir(parents=True, exist_ok=True)
@@ -294,4 +294,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
